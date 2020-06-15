@@ -15,6 +15,8 @@ type Listener struct {
 	Listener       net.Listener
 	Policy         PolicyFunc
 	ValidateHeader Validator
+	UseTimeout     bool
+	Timeout        time.Duration
 }
 
 // Conn is used to wrap and underlying connection which
@@ -28,6 +30,8 @@ type Conn struct {
 	ProxyHeaderPolicy Policy
 	Validate          Validator
 	readErr           error
+	UseTimeout        bool
+	Timeout           time.Duration
 }
 
 // Validator receives a header and decides whether it is a valid one
@@ -66,6 +70,10 @@ func (p *Listener) Accept() (net.Conn, error) {
 		WithPolicy(proxyHeaderPolicy),
 		ValidateHeader(p.ValidateHeader),
 	)
+
+	newConn.UseTimeout = p.UseTimeout
+	newConn.Timeout = p.Timeout
+
 	return newConn, nil
 }
 
@@ -163,7 +171,19 @@ func (p *Conn) SetWriteDeadline(t time.Time) error {
 }
 
 func (p *Conn) readHeader() error {
+	if p.UseTimeout {
+		p.SetDeadline(time.Now().Add(p.Timeout))
+	}
+
 	header, err := Read(p.bufReader)
+
+	if p.UseTimeout {
+		p.SetDeadline(time.Time{})
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			err = ErrNoProxyProtocol
+		}
+	}
+
 	// For the purpose of this wrapper shamefully stolen from armon/go-proxyproto
 	// let's act as if there was no error when PROXY protocol is not present.
 	if err == ErrNoProxyProtocol {
