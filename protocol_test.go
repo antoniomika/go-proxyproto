@@ -67,6 +67,19 @@ func TestParse_ipv4(t *testing.T) {
 
 	pl := &Listener{Listener: l}
 
+	header := &Header{
+		Version:           2,
+		Command:           PROXY,
+		TransportProtocol: TCPv4,
+		SourceAddr: &net.TCPAddr{
+			IP:   net.ParseIP("10.1.1.1"),
+			Port: 1000,
+		},
+		DestinationAddr: &net.TCPAddr{
+			IP:   net.ParseIP("20.2.2.2"),
+			Port: 2000,
+		},
+	}
 	go func() {
 		conn, err := net.Dial("tcp", pl.Addr().String())
 		if err != nil {
@@ -75,15 +88,6 @@ func TestParse_ipv4(t *testing.T) {
 		defer conn.Close()
 
 		// Write out the header!
-		header := &Header{
-			Version:            2,
-			Command:            PROXY,
-			TransportProtocol:  TCPv4,
-			SourceAddress:      net.ParseIP("10.1.1.1"),
-			SourcePort:         1000,
-			DestinationAddress: net.ParseIP("20.2.2.2"),
-			DestinationPort:    2000,
-		}
 		header.WriteTo(conn)
 
 		conn.Write([]byte("ping"))
@@ -124,6 +128,11 @@ func TestParse_ipv4(t *testing.T) {
 	if addr.Port != 1000 {
 		t.Fatalf("bad: %v", addr)
 	}
+
+	h := conn.(*Conn).ProxyHeader()
+	if !h.EqualsTo(header) {
+		t.Errorf("bad: %v", h)
+	}
 }
 
 func TestParse_ipv6(t *testing.T) {
@@ -134,6 +143,20 @@ func TestParse_ipv6(t *testing.T) {
 
 	pl := &Listener{Listener: l}
 
+	header := &Header{
+		Version:           2,
+		Command:           PROXY,
+		TransportProtocol: TCPv6,
+		SourceAddr: &net.TCPAddr{
+			IP:   net.ParseIP("ffff::ffff"),
+			Port: 1000,
+		},
+		DestinationAddr: &net.TCPAddr{
+			IP:   net.ParseIP("ffff::ffff"),
+			Port: 2000,
+		},
+	}
+
 	go func() {
 		conn, err := net.Dial("tcp", pl.Addr().String())
 		if err != nil {
@@ -142,15 +165,6 @@ func TestParse_ipv6(t *testing.T) {
 		defer conn.Close()
 
 		// Write out the header!
-		header := &Header{
-			Version:            2,
-			Command:            PROXY,
-			TransportProtocol:  TCPv6,
-			SourceAddress:      net.ParseIP("ffff::ffff"),
-			SourcePort:         1000,
-			DestinationAddress: net.ParseIP("ffff::ffff"),
-			DestinationPort:    2000,
-		}
 		header.WriteTo(conn)
 
 		conn.Write([]byte("ping"))
@@ -190,6 +204,11 @@ func TestParse_ipv6(t *testing.T) {
 	}
 	if addr.Port != 1000 {
 		t.Fatalf("bad: %v", addr)
+	}
+
+	h := conn.(*Conn).ProxyHeader()
+	if !h.EqualsTo(header) {
+		t.Errorf("bad: %v", h)
 	}
 }
 
@@ -271,13 +290,17 @@ func TestReadingIsRefusedWhenProxyHeaderPresentButNotAllowed(t *testing.T) {
 		}
 		defer conn.Close()
 		header := &Header{
-			Version:            2,
-			Command:            PROXY,
-			TransportProtocol:  TCPv4,
-			SourceAddress:      net.ParseIP("10.1.1.1"),
-			SourcePort:         1000,
-			DestinationAddress: net.ParseIP("20.2.2.2"),
-			DestinationPort:    2000,
+			Version:           2,
+			Command:           PROXY,
+			TransportProtocol: TCPv4,
+			SourceAddr: &net.TCPAddr{
+				IP:   net.ParseIP("10.1.1.1"),
+				Port: 1000,
+			},
+			DestinationAddr: &net.TCPAddr{
+				IP:   net.ParseIP("20.2.2.2"),
+				Port: 2000,
+			},
 		}
 		header.WriteTo(conn)
 	}()
@@ -313,13 +336,17 @@ func TestIgnorePolicyIgnoresIpFromProxyHeader(t *testing.T) {
 
 		// Write out the header!
 		header := &Header{
-			Version:            2,
-			Command:            PROXY,
-			TransportProtocol:  TCPv4,
-			SourceAddress:      net.ParseIP("10.1.1.1"),
-			SourcePort:         1000,
-			DestinationAddress: net.ParseIP("20.2.2.2"),
-			DestinationPort:    2000,
+			Version:           2,
+			Command:           PROXY,
+			TransportProtocol: TCPv4,
+			SourceAddr: &net.TCPAddr{
+				IP:   net.ParseIP("10.1.1.1"),
+				Port: 1000,
+			},
+			DestinationAddr: &net.TCPAddr{
+				IP:   net.ParseIP("20.2.2.2"),
+				Port: 2000,
+			},
 		}
 		header.WriteTo(conn)
 
@@ -454,6 +481,50 @@ func TestReadingIsRefusedOnErrorWhenLocalAddrRequestedFirst(t *testing.T) {
 	}
 }
 
+func Test_ConnectionCasts(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+
+	policyFunc := func(upstream net.Addr) (Policy, error) { return REQUIRE, nil }
+
+	pl := &Listener{Listener: l, Policy: policyFunc}
+
+	go func() {
+		conn, err := net.Dial("tcp", pl.Addr().String())
+		if err != nil {
+			t.Fatalf("err: %v", err)
+		}
+		defer conn.Close()
+		conn.Write([]byte("ping"))
+	}()
+
+	conn, err := pl.Accept()
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	defer conn.Close()
+
+	proxyprotoConn := conn.(*Conn)
+	_, ok := proxyprotoConn.TCPConn()
+	if !ok {
+		t.Fatal("err: should be a tcp connection")
+	}
+	_, ok = proxyprotoConn.UDPConn()
+	if ok {
+		t.Fatal("err: should be a tcp connection not udp")
+	}
+	_, ok = proxyprotoConn.UnixConn()
+	if ok {
+		t.Fatal("err: should be a tcp connection not unix")
+	}
+	_, ok = proxyprotoConn.Raw().(*net.TCPConn)
+	if !ok {
+		t.Fatal("err: should be a tcp connection")
+	}
+}
+
 func Test_ConnectionErrorsWhenHeaderValidationFails(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -472,13 +543,17 @@ func Test_ConnectionErrorsWhenHeaderValidationFails(t *testing.T) {
 
 		// Write out the header!
 		header := &Header{
-			Version:            2,
-			Command:            PROXY,
-			TransportProtocol:  TCPv4,
-			SourceAddress:      net.ParseIP("10.1.1.1"),
-			SourcePort:         1000,
-			DestinationAddress: net.ParseIP("20.2.2.2"),
-			DestinationPort:    2000,
+			Version:           2,
+			Command:           PROXY,
+			TransportProtocol: TCPv4,
+			SourceAddr: &net.TCPAddr{
+				IP:   net.ParseIP("10.1.1.1"),
+				Port: 1000,
+			},
+			DestinationAddr: &net.TCPAddr{
+				IP:   net.ParseIP("20.2.2.2"),
+				Port: 2000,
+			},
 		}
 		header.WriteTo(conn)
 	}()
@@ -567,13 +642,17 @@ func Test_TLSServer(t *testing.T) {
 
 		// Write out the header!
 		header := &Header{
-			Version:            2,
-			Command:            PROXY,
-			TransportProtocol:  TCPv4,
-			SourceAddress:      net.ParseIP("10.1.1.1"),
-			SourcePort:         1000,
-			DestinationAddress: net.ParseIP("20.2.2.2"),
-			DestinationPort:    2000,
+			Version:           2,
+			Command:           PROXY,
+			TransportProtocol: TCPv4,
+			SourceAddr: &net.TCPAddr{
+				IP:   net.ParseIP("10.1.1.1"),
+				Port: 1000,
+			},
+			DestinationAddr: &net.TCPAddr{
+				IP:   net.ParseIP("20.2.2.2"),
+				Port: 2000,
+			},
 		}
 		header.WriteTo(conn)
 
@@ -632,13 +711,17 @@ func Test_MisconfiguredTLSServerRespondsWithUnderlyingError(t *testing.T) {
 
 		// Write out the header!
 		header := &Header{
-			Version:            2,
-			Command:            PROXY,
-			TransportProtocol:  TCPv4,
-			SourceAddress:      net.ParseIP("10.1.1.1"),
-			SourcePort:         1000,
-			DestinationAddress: net.ParseIP("20.2.2.2"),
-			DestinationPort:    2000,
+			Version:           2,
+			Command:           PROXY,
+			TransportProtocol: TCPv4,
+			SourceAddr: &net.TCPAddr{
+				IP:   net.ParseIP("10.1.1.1"),
+				Port: 1000,
+			},
+			DestinationAddr: &net.TCPAddr{
+				IP:   net.ParseIP("20.2.2.2"),
+				Port: 2000,
+			},
 		}
 		header.WriteTo(conn)
 

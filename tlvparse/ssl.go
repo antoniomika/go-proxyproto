@@ -65,6 +65,24 @@ func (s PP2SSL) SSLVersion() (string, bool) {
 	return "", false
 }
 
+// Marshal formats the PP2SSL structure as a TLV.
+func (s PP2SSL) Marshal() (proxyproto.TLV, error) {
+	v := make([]byte, 5)
+	v[0] = s.Client
+	binary.BigEndian.PutUint32(v[1:5], s.Verify)
+
+	tlvs, err := proxyproto.JoinTLVs(s.TLV)
+	if err != nil {
+		return proxyproto.TLV{}, err
+	}
+	v = append(v, tlvs...)
+
+	return proxyproto.TLV{
+		Type:  proxyproto.PP2_TYPE_SSL,
+		Value: v,
+	}, nil
+}
+
 // ClientCN returns the string representation (in UTF8) of the Common Name field (OID: 2.5.4.3) of the client
 // certificate's Distinguished Name and whether that extension exists.
 func (s PP2SSL) ClientCN() (string, bool) {
@@ -78,9 +96,8 @@ func (s PP2SSL) ClientCN() (string, bool) {
 
 // SSLType is true if the TLV is type SSL
 func IsSSL(t proxyproto.TLV) bool {
-	return t.Type == proxyproto.PP2_TYPE_SSL && t.Length >= tlvSSLMinLen
+	return t.Type == proxyproto.PP2_TYPE_SSL && len(t.Value) >= tlvSSLMinLen
 }
-
 
 // SSL returns the pp2_tlv_ssl from section 2.2.5 or errors with ErrIncompatibleTLV or ErrMalformedTLV
 func SSL(t proxyproto.TLV) (PP2SSL, error) {
@@ -88,7 +105,7 @@ func SSL(t proxyproto.TLV) (PP2SSL, error) {
 	if !IsSSL(t) {
 		return ssl, proxyproto.ErrIncompatibleTLV
 	}
-	if t.Length < tlvSSLMinLen {
+	if len(t.Value) < tlvSSLMinLen {
 		return ssl, proxyproto.ErrMalformedTLV
 	}
 	ssl.Client = t.Value[0]
@@ -99,7 +116,6 @@ func SSL(t proxyproto.TLV) (PP2SSL, error) {
 		return PP2SSL{}, err
 	}
 	versionFound := !ssl.ClientSSL()
-	var cnFound bool
 	for _, tlv := range ssl.TLV {
 		switch tlv.Type {
 		case proxyproto.PP2_SUBTYPE_SSL_VERSION:
@@ -109,7 +125,7 @@ func SSL(t proxyproto.TLV) (PP2SSL, error) {
 				appended at the end of the field in the TLV format using the type
 				PP2_SUBTYPE_SSL_VERSION.
 			*/
-			if tlv.Length == 0 || !isASCII(tlv.Value) {
+			if len(tlv.Value) == 0 || !isASCII(tlv.Value) {
 				return PP2SSL{}, proxyproto.ErrMalformedTLV
 			}
 			versionFound = true
@@ -119,13 +135,12 @@ func SSL(t proxyproto.TLV) (PP2SSL, error) {
 				(OID: 2.5.4.3) of the client certificate's Distinguished Name, is appended
 				using the TLV format and the type PP2_SUBTYPE_SSL_CN. E.g. "example.com".
 			*/
-			if tlv.Length == 0 || !utf8.Valid(tlv.Value) {
+			if len(tlv.Value) == 0 || !utf8.Valid(tlv.Value) {
 				return PP2SSL{}, proxyproto.ErrMalformedTLV
 			}
-			cnFound = true
 		}
 	}
-	if !(versionFound && cnFound) {
+	if !versionFound {
 		return PP2SSL{}, proxyproto.ErrMalformedTLV
 	}
 	return ssl, nil
