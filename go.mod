@@ -1,3 +1,3 @@
-module github.com/antoniomika/go-proxyproto
+module github.com/pires/go-proxyproto
 
 go 1.13
